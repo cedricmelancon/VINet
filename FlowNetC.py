@@ -84,7 +84,7 @@ class FlowNetC(nn.Module):
         out_conv3b = self.conv3(out_conv2b)
 
         # Merge streams
-        out_corr = spatial_correlation_sample(out_conv3a, out_conv3b, kernel_size=1, patch_size=21, stride=1, padding=0, dilation_patch=2) # False   # ==> [5, 441, 48, 64]
+        out_corr = spatial_correlation_sample(out_conv3a, out_conv3b, kernel_size=1, patch_size=21, stride=1, padding=0, dilation=1, dilation_patch=2) # False   # ==> [5, 441, 48, 64]
         b, ph, pw, h, w = out_corr.size()
         out_corr = out_corr.view(b, ph * pw, h, w)/out_conv3a.size(1)
         out_corr = self.corr_activation(out_corr)
