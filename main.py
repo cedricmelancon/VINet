@@ -159,7 +159,7 @@ class Vinet(nn.Module):
         
         
         checkpoint = None
-        checkpoint_pytorch = '../model/FlowNet2-C_checkpoint.pth.tar'
+        checkpoint_pytorch = '../dockerData/model/FlowNet2-C_checkpoint.pth.tar'
         #checkpoint_pytorch = '/notebooks/data/model/FlowNet2-SD_checkpoint.pth.tar'
         if os.path.isfile(checkpoint_pytorch):
             checkpoint = torch.load(checkpoint_pytorch,\
@@ -229,7 +229,7 @@ def train():
     
     model.train()
 
-    mydataset = MyDataset('../EuRoC_modify/', 'V1_01_easy')
+    mydataset = MyDataset('../dockerData/EuRoC_modify/', 'V1_01_easy')
     #criterion  = nn.MSELoss()
     criterion  = nn.L1Loss(size_average=False)
     
@@ -319,7 +319,7 @@ def test():
     model.eval()
 
     print("Create dataset")
-    mydataset = MyDataset('../EuRoC_modify/', 'V2_01_easy')
+    mydataset = MyDataset('../dockerData/EuRoC_modify/', 'V2_01_easy')
     
     
     err = 0
@@ -366,7 +366,7 @@ def test():
     x = trajectoryAbs[0].astype(str)
     x = ",".join(x)
     
-    with open('../EuRoC_modify/V2_01_easy/vicon0/sampled_relative_ans.csv', 'w+') as f:
+    with open('../dockerData/EuRoC_modify/V2_01_easy/vicon0/sampled_relative_ans.csv', 'w+') as f:
         tmpStr = x
         f.write(tmpStr + '\n')        
         
