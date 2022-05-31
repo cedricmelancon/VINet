@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import torch.utils.data
 import torch.optim as optim
 
-from tensorboardX import SummaryWriter
+#from tensorboard import SummaryWriter
 
 import os
 from utils import tools
@@ -25,7 +25,7 @@ from PIL import Image
 import csv
 import time
 
-
+torch.cuda.empty_cache()
 
 class MyDataset:
     
@@ -159,7 +159,7 @@ class Vinet(nn.Module):
         
         
         checkpoint = None
-        checkpoint_pytorch = '/notebooks/model/FlowNet2-C_checkpoint.pth.tar'
+        checkpoint_pytorch = '../model/FlowNet2-C_checkpoint.pth.tar'
         #checkpoint_pytorch = '/notebooks/data/model/FlowNet2-SD_checkpoint.pth.tar'
         if os.path.isfile(checkpoint_pytorch):
             checkpoint = torch.load(checkpoint_pytorch,\
@@ -225,11 +225,11 @@ def train():
     optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
     #optimizer = optim.Adam(model.parameters(), lr = 0.001)
     
-    writer = SummaryWriter()
+    #writer = SummaryWriter()
     
     model.train()
 
-    mydataset = MyDataset('/notebooks/EuRoC_modify/', 'V1_01_easy')
+    mydataset = MyDataset('../EuRoC_modify/', 'V1_01_easy')
     #criterion  = nn.MSELoss()
     criterion  = nn.L1Loss(size_average=False)
     
@@ -281,12 +281,11 @@ def train():
                                                           int(remainingTime//60%60), 
                                                           int(remainingTime%60))
 
-                
                 block.log('Train Epoch: {}\t[{}/{} ({:.0f}%)]\tLoss: {:.6f}, TimeAvg: {:.4f}, Remaining: {}'.format(
                     k, i , batch_num,
-                    100. * (i + batch_num*k) / (batch_num*epoch), loss.data[0], avgTime, rTime_str))
+                    100. * (i + batch_num*k) / (batch_num*epoch), loss.item(), avgTime, rTime_str))
                 
-                writer.add_scalar('loss', loss.data[0], k*batch_num + i)
+                #writer.add_scalar('loss', loss.item(), k*batch_num + i)
 
                 
                 
@@ -298,11 +297,11 @@ def train():
     #torch.save(model, 'vinet_v1_01.pt')
     #model.save_state_dict('vinet_v1_01.pt')
     torch.save(model.state_dict(), 'vinet_v1_01.pt')
-    writer.export_scalars_to_json("./all_scalars.json")
-    writer.close()
+    #writer.export_scalars_to_json("./all_scalars.json")
+    #writer.close()
 
 def test():
-    checkpoint_pytorch = '/notebooks/vinet/vinet_v1_01.pt'
+    checkpoint_pytorch = '../vinet/vinet_v1_01.pt'
     if os.path.isfile(checkpoint_pytorch):
         checkpoint = torch.load(checkpoint_pytorch,\
                             map_location=lambda storage, loc: storage.cuda(0))
@@ -311,11 +310,16 @@ def test():
         print('No checkpoint')
     
 
+    print("Creating model")
     model = Vinet()
+
+    print("Loading checkpoint")
     model.load_state_dict(checkpoint)  
     model.cuda()
     model.eval()
-    mydataset = MyDataset('/notebooks/EuRoC_modify/', 'V2_01_easy')
+
+    print("Create dataset")
+    mydataset = MyDataset('../EuRoC_modify/', 'V2_01_easy')
     
     
     err = 0
@@ -324,6 +328,7 @@ def test():
     start = 5
     #for i in range(len(mydataset)-1):
     for i in range(start, 100):
+        print(i)
         data, data_imu, target, target2 = mydataset.load_img_bat(i, 1)
         data, data_imu, target, target2 = data.cuda(), data_imu.cuda(), target.cuda(), target2.cuda()
 
@@ -361,7 +366,7 @@ def test():
     x = trajectoryAbs[0].astype(str)
     x = ",".join(x)
     
-    with open('/notebooks/EuRoC_modify/V2_01_easy/vicon0/sampled_relative_ans.csv', 'w+') as f:
+    with open('../EuRoC_modify/V2_01_easy/vicon0/sampled_relative_ans.csv', 'w+') as f:
         tmpStr = x
         f.write(tmpStr + '\n')        
         

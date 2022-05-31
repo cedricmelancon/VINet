@@ -7,7 +7,7 @@ import sys
 sys.path
 sys.path.append('/notebooks/Sophus/py')
 
-from sophus import *
+import sophus as sp
 import numpy as np
 from sympy import *
 
@@ -41,12 +41,14 @@ def xyzQuaternion2se3_(arr):
         
     q_real = ww
     q_img = Matrix([wx, wy, wz])
-    q = Quaternion(q_real,q_img)
-    R = So3(q)
-    
-    RT = Se3(R, trans)
+
+    q = Qua(real=q_real, imaginary=q_img)
+    R = sp.SO3(q.normalised.rotation_matrix)
+
+    RT = sp.SE3(R.matrix(), trans)
     numpy_vec = np.array(RT.log()).astype(float)  # SE3 to se3
-    return np.concatenate(numpy_vec)
+
+    return numpy_vec
 
 def xyzQ2se3(arr):
     result = []
@@ -67,8 +69,8 @@ def SE3toXYZQuaternion(matrix):
     
 #     if not np.allclose(np.dot(q, q.conj().transpose()), np.eye(3)):
 #         print(q)
-    
-    q8d = Qua(matrix=q)
+
+    q8d = Qua(matrix=sp.to_orthogonal(q))
     r = np.array([q8d.real]).astype(float)
     v = np.array(q8d.imaginary).astype(float)
     
@@ -82,12 +84,12 @@ def accu(lastxyzQuaternion, new_se3r6):
     new_se3r6: np.array([se3R^6])
     """
     new_se3r6 = Matrix(np.transpose(new_se3r6)) #numpy array to sympy matrix
-    M_SE3 = Se3.exp(new_se3r6)
+    M_SE3 = sp.SE3.exp(new_se3r6)
     M_SE3 = M_SE3.matrix()
-    
+
     last = xyzQ2se3(lastxyzQuaternion)
     last = Matrix(np.transpose(last))
-    M_SE3_last = Se3.exp(last)
+    M_SE3_last = sp.SE3.exp(last)
     M_SE3_last = M_SE3_last.matrix()
     
     accu = M_SE3_last * M_SE3

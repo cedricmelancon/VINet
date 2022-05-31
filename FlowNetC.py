@@ -5,7 +5,7 @@ from torch.nn import init
 import math
 import numpy as np
 
-from correlation_package.modules.correlation import Correlation
+from spatial_correlation_sampler import spatial_correlation_sample
 
 from submodules import *
 'Parameter count , 39,175,298 '
@@ -29,7 +29,7 @@ class FlowNetC(nn.Module):
         #        Correlation(pad_size=20, kernel_size=1, max_displacement=20, stride1=1, stride2=2, corr_multiply=1),
         #        tofp16())
         #else:
-        self.corr = Correlation(pad_size=20, kernel_size=1, max_displacement=20, stride1=1, stride2=2, corr_multiply=1)
+        #self.corr = Correlation(pad_size=20, kernel_size=1, max_displacement=20, stride1=1, stride2=2, corr_multiply=1)
 
         self.corr_activation = nn.LeakyReLU(0.1,inplace=True)
         self.conv3_1 = conv(self.batchNorm, 473,  256)
@@ -84,7 +84,9 @@ class FlowNetC(nn.Module):
         out_conv3b = self.conv3(out_conv2b)
 
         # Merge streams
-        out_corr = self.corr(out_conv3a, out_conv3b) # False   # ==> [5, 441, 48, 64]
+        out_corr = spatial_correlation_sample(out_conv3a, out_conv3b, kernel_size=1, patch_size=21, stride=1, padding=0, dilation_patch=2) # False   # ==> [5, 441, 48, 64]
+        b, ph, pw, h, w = out_corr.size()
+        out_corr = out_corr.view(b, ph * pw, h, w)/out_conv3a.size(1)
         out_corr = self.corr_activation(out_corr)
 
         # Redirect top input stream and concatenate

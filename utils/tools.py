@@ -5,14 +5,12 @@ import subprocess, shutil
 from os.path import *
 import numpy as np
 from inspect import isclass
-from pytz import timezone
 from datetime import datetime
 import inspect
 import torch
 
 def datestr():
-    pacific = timezone('US/Pacific')
-    now = datetime.now(pacific)
+    now = datetime.now(datetime.timezone.utc)
     return '{}{:02}{:02}_{:02}{:02}'.format(now.year, now.month, now.day, now.hour, now.minute)
 
 def module_to_dict(module, exclude=[]):
@@ -27,11 +25,11 @@ class TimerBlock:
         print(("{}".format(title)))
 
     def __enter__(self):
-        self.start = time.clock()
+        self.start = time.time()
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self.end = time.clock()
+        self.end = time.time()
         self.interval = self.end - self.start
 
         if exc_type is not None:
@@ -41,7 +39,7 @@ class TimerBlock:
 
 
     def log(self, string):
-        duration = time.clock() - self.start
+        duration = time.time() - self.start
         units = 's'
         if duration > 60:
             duration = duration / 60.
@@ -55,7 +53,7 @@ class TimerBlock:
         fid.close()
 
     def avg(self):
-        duration = time.clock() - self.start
+        duration = time.time() - self.start
         if self.count == 0:
             return duration
         else:
