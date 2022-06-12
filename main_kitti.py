@@ -5,7 +5,7 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 import torch.utils.data
 import torch.optim as optim
-
+from torchvision import transforms
 #from tensorboard import SummaryWriter
 
 import os
@@ -24,6 +24,12 @@ from PIL import Image
 
 import csv
 import time
+from datasets.kitti import KittiDataset
+from tqdm import tqdm
+from sklearn.model_selection import train_test_split
+from torch.utils.data import Subset
+from torch.utils.data import DataLoader
+import cv2
 
 torch.cuda.empty_cache()
 
@@ -136,18 +142,18 @@ class Vinet(nn.Module):
     def __init__(self):
         super(Vinet, self).__init__()
         self.rnn = nn.LSTM(
-            input_size=49165,#49152,#24576, 
+            input_size=49152,#49165,#49152,#24576, 
             hidden_size=1024,#64, 
             num_layers=2,
             batch_first=True)
         self.rnn.cuda()
         
-        self.rnnIMU = nn.LSTM(
-            input_size=6, 
-            hidden_size=6,
-            num_layers=2,
-            batch_first=True)
-        self.rnnIMU.cuda()
+        #self.rnnIMU = nn.LSTM(
+        #    input_size=6,
+        #    hidden_size=6,
+        #    num_layers=2,
+        #    batch_first=True)
+        #self.rnnIMU.cuda()
         
         self.linear1 = nn.Linear(1024, 128)
         self.linear2 = nn.Linear(128, 6)
@@ -173,19 +179,19 @@ class Vinet(nn.Module):
         self.flownet_c.load_state_dict(checkpoint['state_dict'])
         self.flownet_c.cuda()
 
-    def forward(self, image, imu, xyzQ):
-        batch_size, timesteps, C, H, W = image.size()
+    def forward(self, image): #, imu, xyzQ):
+        batch_size, C, H, W = image.size()
         
         ## Input1: Feed image pairs to FlownetC
-        c_in = image.view(batch_size, timesteps * C, H, W)
+        c_in = image.view(batch_size, C, H, W)
         c_out = self.flownet_c(c_in)
         #print('c_out', c_out.shape)
         
         ## Input2: Feed IMU records to LSTM
-        imu_out, (imu_n, imu_c) = self.rnnIMU(imu)
-        imu_out = imu_out[:, -1, :]
+        #imu_out, (imu_n, imu_c) = self.rnnIMU(imu)
+        #imu_out = imu_out[:, -1, :]
         #print('imu_out', imu_out.shape)
-        imu_out = imu_out.unsqueeze(1)
+        #imu_out = imu_out.unsqueeze(1)
         #print('imu_out', imu_out.shape)
         
         
@@ -195,10 +201,11 @@ class Vinet(nn.Module):
         #print('r_in', r_in.shape)
         
 
-        cat_out = torch.cat((r_in, imu_out), 2)#1 1 49158
-        cat_out = torch.cat((cat_out, xyzQ), 2)#1 1 49165
-        
-        r_out, (h_n, h_c) = self.rnn(cat_out)
+        #cat_out = torch.cat((r_in, imu_out), 2)#1 1 49158
+        #cat_out = torch.cat((cat_out, xyzQ), 2)#1 1 49165
+
+        r_out, (h_n, h_c) = self.rnn(r_in)
+        #r_out, (h_n, h_c) = self.rnn(cat_out)
         l_out1 = self.linear1(r_out[:,-1,:])
         l_out2 = self.linear2(l_out1)
         #l_out3 = self.linear3(l_out2)
@@ -217,75 +224,114 @@ def model_out_to_flow_png(output):
     im = Image.fromarray(im_arr)
     im.save('test.png')
 
+def resizeImage(img, scale_percent):
+    width = int(img.shape[1] * scale_percent / 100)
+    height = int(img.shape[0] * scale_percent / 100)
+    dim = (width, height)
+
+    # resize image
+    resized = cv2.resize(img, dim, interpolation=cv2.INTER_AREA)
+    return resized
+
+def transformCameraData(data):
+    data = resizeImage(data, 60)
+    #formatted = (data * 255).astype('uint8')
+    formatted = (data * 255).astype('uint8')
+    img = Image.fromarray(formatted)
+
+    preprocess = transforms.Compose([
+        transforms.ToTensor(),
+        #transforms.Normalize(mean=[0, 0, 0], std=[255, 255, 255]),
+        #transforms.Normalize(mean=[0.45, 0.432, 0.411], std=[1, 1, 1]),
+        #transforms.RandomCrop((320, 448)),
+        #transforms.RandomVerticalFlip(),
+        #transforms.RandomHorizontalFlip()
+    ])
+    return preprocess(img)
 
 def train():
-    epoch = 10
-    batch = 1
+    epoch = 300
+    batch = 8
     model = Vinet()
-    #optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
-    optimizer = optim.Adam(model.parameters(), lr = 0.001)
+    #optimizer = optim.SGD(model.parameters(), lr=0.005, momentum=0.9)
+    optimizer = optim.Adam(model.parameters(), lr = 0.005)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 40, 60, 80, 100, 120, 140, 160, 180], gamma=0.5)
+    
     
     #writer = SummaryWriter()
     
     model.train()
 
-    mydataset = MyDataset('./data/EuRoC_modify/', 'V1_01_easy')
+    mydataset = KittiDataset('./data/kitti', 0, 'cam2', transform=transformCameraData)
+    train_idx, val_idx = train_test_split(list(range(len(mydataset))), test_size=0.25 , shuffle=False)
+
+    train_data = Subset(mydataset, train_idx)
+    train_loader = DataLoader(train_data, batch_size=batch, shuffle=False, drop_last=True)
+    #mydataset = MyDataset('../dockerData/EuRoC_modify/', 'V1_01_easy')
     #criterion  = nn.MSELoss()
-    criterion  = nn.L1Loss(size_average=False)
+    criterion  = nn.L1Loss() #size_average=False)
     
-    start = 5
-    end = len(mydataset)-batch
-    batch_num = (end - start) #/ batch
+    #start = 5
+    #end = len(mydataset)-batch
+    #batch_num = (end - start) #/ batch
     startT = time.time() 
     abs_traj = None
     
     with tools.TimerBlock("Start training") as block:
         for k in range(epoch):
-            for i in range(start, end):#len(mydataset)-1):
-                data, data_imu, target_f2f, target_global = mydataset.load_img_bat(i, batch)
-                data, data_imu, target_f2f, target_global = \
-                    data.cuda(), data_imu.cuda(), target_f2f.cuda(), target_global.cuda()
-                print(data_imu)
-                optimizer.zero_grad()
-                
-                if i == start:
+            total_loss = 0
+            n_iter = 0
+            for inputs, labels in tqdm(iter(train_loader)):
+                data = torch.cat(inputs['data'], 1).cuda()
+                labels = labels.type(torch.FloatTensor).cuda()
+            #for i in range(start, end):#len(mydataset)-1):
+                #data, data_imu, target_f2f, target_global = mydataset.load_img_bat(i, batch)
+                #data, data_imu, target_f2f, target_global = \
+                #    data.cuda(), data_imu.cuda(), target_f2f.cuda(), target_global.cuda()
+
+                #if i == start:
                     ## load first SE3 pose xyzQuaternion
-                    abs_traj = mydataset.getTrajectoryAbs(start)
-                    
-                    abs_traj_input = np.expand_dims(abs_traj, axis=0)
-                    abs_traj_input = np.expand_dims(abs_traj_input, axis=0)
-                    abs_traj_input = Variable(torch.from_numpy(abs_traj_input).type(torch.FloatTensor).cuda()) 
+                #    abs_traj = mydataset.getTrajectoryAbs(start)
+                #
+                #    abs_traj_input = np.expand_dims(abs_traj, axis=0)
+                #    abs_traj_input = np.expand_dims(abs_traj_input, axis=0)
+                #    abs_traj_input = Variable(torch.from_numpy(abs_traj_input).type(torch.FloatTensor).cuda())
                 
                 ## Forward
-                output = model(data, data_imu, abs_traj_input)
+                output = model(data) #, data_imu, abs_traj_input)
                 
                 ## Accumulate pose
-                numarr = output.data.cpu().numpy()
+                #numarr = output.data.cpu().numpy()
                 
-                abs_traj = se3qua.accu(abs_traj, numarr)
+                #abs_traj = se3qua.accu(abs_traj, numarr)
                 
-                abs_traj_input = np.expand_dims(abs_traj, axis=0)
-                abs_traj_input = np.expand_dims(abs_traj_input, axis=0)
-                abs_traj_input = Variable(torch.from_numpy(abs_traj_input).type(torch.FloatTensor).cuda()) 
+                #abs_traj_input = np.expand_dims(abs_traj, axis=0)
+                #abs_traj_input = np.expand_dims(abs_traj_input, axis=0)
+                #abs_traj_input = Variable(torch.from_numpy(abs_traj_input).type(torch.FloatTensor).cuda())
                 
                 ## (F2F loss) + (Global pose loss)
                 ## Global pose: Full concatenated pose relative to the start of the sequence
-                loss = criterion(output, target_f2f) + criterion(abs_traj_input, target_global)
+                loss = criterion(output, labels) # + criterion(abs_traj_input, target_global)
+                total_loss += loss
+                n_iter += 1
 
+                optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
                 avgTime = block.avg()
-                remainingTime = int((batch_num*epoch -  (i + batch_num*k)) * avgTime)
-                rTime_str = "{:02d}:{:02d}:{:02d}".format(int(remainingTime/60//60), 
-                                                          int(remainingTime//60%60), 
-                                                          int(remainingTime%60))
+                #remainingTime = int((batch_num*epoch -  (i + batch_num*k)) * avgTime)
+                #rTime_str = "{:02d}:{:02d}:{:02d}".format(int(remainingTime/60//60),
+                #                                          int(remainingTime//60%60),
+                #                                          int(remainingTime%60))
 
-                block.log('Train Epoch: {}\t[{}/{} ({:.0f}%)]\tLoss: {:.6f}, TimeAvg: {:.4f}, Remaining: {}'.format(
-                    k, i , batch_num,
-                    100. * (i + batch_num*k) / (batch_num*epoch), loss.item(), avgTime, rTime_str))
-                
+               
                 #writer.add_scalar('loss', loss.item(), k*batch_num + i)
+            
+            block.log('Train Epoch: {}\tLoss: {:.6f}'.format(
+                    k,
+                    total_loss.data.float()/n_iter))
+            scheduler.step()
 
                 
                 

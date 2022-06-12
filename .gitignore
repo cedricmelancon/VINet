@@ -12,3 +12,8 @@ all_scalars.json
 *.flo
 runs/
 
+data/
+
+*.poses
+
+.idea/

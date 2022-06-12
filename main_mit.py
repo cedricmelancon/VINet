@@ -5,7 +5,7 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 import torch.utils.data
 import torch.optim as optim
-
+from torchvision import transforms
 #from tensorboard import SummaryWriter
 
 import os
@@ -24,6 +24,12 @@ from PIL import Image
 
 import csv
 import time
+from datasets import MITStataCenterDataset
+from tqdm import tqdm
+from sklearn.model_selection import train_test_split
+from torch.utils.data import Subset
+from torch.utils.data import DataLoader
+import cv2
 
 torch.cuda.empty_cache()
 
@@ -136,21 +142,21 @@ class Vinet(nn.Module):
     def __init__(self):
         super(Vinet, self).__init__()
         self.rnn = nn.LSTM(
-            input_size=49165,#49152,#24576, 
+            input_size=43014,#49165,#49152,#24576, 
             hidden_size=1024,#64, 
             num_layers=2,
             batch_first=True)
         self.rnn.cuda()
         
         self.rnnIMU = nn.LSTM(
-            input_size=6, 
+            input_size=7,
             hidden_size=6,
             num_layers=2,
             batch_first=True)
         self.rnnIMU.cuda()
         
         self.linear1 = nn.Linear(1024, 128)
-        self.linear2 = nn.Linear(128, 6)
+        self.linear2 = nn.Linear(128, 3)
         #self.linear3 = nn.Linear(128, 6)
         self.linear1.cuda()
         self.linear2.cuda()
@@ -159,7 +165,7 @@ class Vinet(nn.Module):
         
         
         checkpoint = None
-        checkpoint_pytorch = './data/FlowNet2-C_checkpoint.pth.tar'
+        checkpoint_pytorch = './data/flownets/model_best.pth.tar'
         #checkpoint_pytorch = '/notebooks/data/model/FlowNet2-SD_checkpoint.pth.tar'
         if os.path.isfile(checkpoint_pytorch):
             checkpoint = torch.load(checkpoint_pytorch,\
@@ -173,11 +179,11 @@ class Vinet(nn.Module):
         self.flownet_c.load_state_dict(checkpoint['state_dict'])
         self.flownet_c.cuda()
 
-    def forward(self, image, imu, xyzQ):
-        batch_size, timesteps, C, H, W = image.size()
+    def forward(self, image, imu): #, xyzQ):
+        batch_size, C, H, W = image.size()
         
         ## Input1: Feed image pairs to FlownetC
-        c_in = image.view(batch_size, timesteps * C, H, W)
+        c_in = image.view(batch_size, C, H, W)
         c_out = self.flownet_c(c_in)
         #print('c_out', c_out.shape)
         
@@ -196,8 +202,9 @@ class Vinet(nn.Module):
         
 
         cat_out = torch.cat((r_in, imu_out), 2)#1 1 49158
-        cat_out = torch.cat((cat_out, xyzQ), 2)#1 1 49165
-        
+        #cat_out = torch.cat((cat_out, xyzQ), 2)#1 1 49165
+
+        #r_out, (h_n, h_c) = self.rnn(r_in)
         r_out, (h_n, h_c) = self.rnn(cat_out)
         l_out1 = self.linear1(r_out[:,-1,:])
         l_out2 = self.linear2(l_out1)
@@ -217,172 +224,97 @@ def model_out_to_flow_png(output):
     im = Image.fromarray(im_arr)
     im.save('test.png')
 
+def resizeImage(img, scale_percent):
+    width = int(img.shape[1] * scale_percent / 100)
+    height = int(img.shape[0] * scale_percent / 100)
+    dim = (width, height)
 
-def train():
-    epoch = 10
-    batch = 1
-    model = Vinet()
-    #optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
-    optimizer = optim.Adam(model.parameters(), lr = 0.001)
-    
-    #writer = SummaryWriter()
-    
+    # resize image
+    resized = cv2.resize(img, dim, interpolation=cv2.INTER_AREA)
+    return resized
+
+def transformCameraData(data):
+    data = resizeImage(data, 70)
+    #formatted = (data * 255).astype('uint8')
+    formatted = (data * 255).astype('uint8')
+    img = Image.fromarray(formatted)
+
+    preprocess = transforms.Compose([
+        transforms.ToTensor(),
+        #transforms.Normalize(mean=[0, 0, 0], std=[255, 255, 255]),
+        #transforms.Normalize(mean=[0.45, 0.432, 0.411], std=[1, 1, 1]),
+        #transforms.RandomCrop((320, 448)),
+        #transforms.RandomVerticalFlip(),
+        #transforms.RandomHorizontalFlip()
+    ])
+    return preprocess(img)
+
+def train(model, criterion, optimizer, epoch, loader):
     model.train()
-
-    mydataset = MyDataset('./data/EuRoC_modify/', 'V1_01_easy')
-    #criterion  = nn.MSELoss()
-    criterion  = nn.L1Loss(size_average=False)
     
-    start = 5
-    end = len(mydataset)-batch
-    batch_num = (end - start) #/ batch
-    startT = time.time() 
-    abs_traj = None
-    
-    with tools.TimerBlock("Start training") as block:
-        for k in range(epoch):
-            for i in range(start, end):#len(mydataset)-1):
-                data, data_imu, target_f2f, target_global = mydataset.load_img_bat(i, batch)
-                data, data_imu, target_f2f, target_global = \
-                    data.cuda(), data_imu.cuda(), target_f2f.cuda(), target_global.cuda()
-                print(data_imu)
-                optimizer.zero_grad()
-                
-                if i == start:
-                    ## load first SE3 pose xyzQuaternion
-                    abs_traj = mydataset.getTrajectoryAbs(start)
-                    
-                    abs_traj_input = np.expand_dims(abs_traj, axis=0)
-                    abs_traj_input = np.expand_dims(abs_traj_input, axis=0)
-                    abs_traj_input = Variable(torch.from_numpy(abs_traj_input).type(torch.FloatTensor).cuda()) 
-                
-                ## Forward
-                output = model(data, data_imu, abs_traj_input)
-                
-                ## Accumulate pose
-                numarr = output.data.cpu().numpy()
-                
-                abs_traj = se3qua.accu(abs_traj, numarr)
-                
-                abs_traj_input = np.expand_dims(abs_traj, axis=0)
-                abs_traj_input = np.expand_dims(abs_traj_input, axis=0)
-                abs_traj_input = Variable(torch.from_numpy(abs_traj_input).type(torch.FloatTensor).cuda()) 
-                
-                ## (F2F loss) + (Global pose loss)
-                ## Global pose: Full concatenated pose relative to the start of the sequence
-                loss = criterion(output, target_f2f) + criterion(abs_traj_input, target_global)
+    total_loss = 0
+    n_iter = 0
+    for inputs, labels in tqdm(iter(loader)):
+        data = torch.cat(inputs['rgb'], 1).cuda()
+        data_imu = inputs['imu'].type(torch.FloatTensor).cuda()
+        labels = labels.type(torch.FloatTensor).cuda()
+        
+        ## Forward
+        output = model(data, data_imu) #, abs_traj_input)
+        
+        loss = criterion(output, labels) # + criterion(abs_traj_input, target_global)
+        total_loss += loss
+        n_iter += 1
 
-                loss.backward()
-                optimizer.step()
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
-                avgTime = block.avg()
-                remainingTime = int((batch_num*epoch -  (i + batch_num*k)) * avgTime)
-                rTime_str = "{:02d}:{:02d}:{:02d}".format(int(remainingTime/60//60), 
-                                                          int(remainingTime//60%60), 
-                                                          int(remainingTime%60))
+    return total_loss.data.float()/n_iter
 
-                block.log('Train Epoch: {}\t[{}/{} ({:.0f}%)]\tLoss: {:.6f}, TimeAvg: {:.4f}, Remaining: {}'.format(
-                    k, i , batch_num,
-                    100. * (i + batch_num*k) / (batch_num*epoch), loss.item(), avgTime, rTime_str))
-                
-                #writer.add_scalar('loss', loss.item(), k*batch_num + i)
-
-                
-                
-                
-            #check_str = 'checkpoint_{}.pt'.format(k)
-            #torch.save(model.state_dict(), check_str)
-            
-    
-    #torch.save(model, 'vinet_v1_01.pt')
-    #model.save_state_dict('vinet_v1_01.pt')
-    #torch.save(model.state_dict(), 'vinet_v1_01.pt')
-    #writer.export_scalars_to_json("./all_scalars.json")
-    #writer.close()
-
-def test():
-    checkpoint_pytorch = '../vinet/vinet_v1_01.pt'
-    if os.path.isfile(checkpoint_pytorch):
-        checkpoint = torch.load(checkpoint_pytorch,\
-                            map_location=lambda storage, loc: storage.cuda(0))
-        #best_err = checkpoint['best_EPE']
-    else:
-        print('No checkpoint')
-    
-
-    print("Creating model")
-    model = Vinet()
-
-    print("Loading checkpoint")
-    model.load_state_dict(checkpoint)  
-    model.cuda()
+def test(model, criterion, epoch, loader):
+    total_loss = 0
+    n_iter = 0
     model.eval()
 
-    print("Create dataset")
-    mydataset = MyDataset('../dockerData/EuRoC_modify/', 'V2_01_easy')
-    
-    
-    err = 0
-    ans = []
-    abs_traj = None
-    start = 5
-    #for i in range(len(mydataset)-1):
-    for i in range(start, 100):
-        print(i)
-        data, data_imu, target, target2 = mydataset.load_img_bat(i, 1)
-        data, data_imu, target, target2 = data.cuda(), data_imu.cuda(), target.cuda(), target2.cuda()
+    with torch.no_grad():
+        for inputs, labels in tqdm(iter(loader)):
+            data = torch.cat(inputs['rgb'], 1).cuda()
+            data_imu = inputs['imu'].type(torch.FloatTensor).cuda()
+            labels = labels.type(torch.FloatTensor).cuda()
+            
+            ## Forward
+            output = model(data, data_imu) #, abs_traj_input)
+            
+            loss = criterion(output, labels) # + criterion(abs_traj_input, target_global)
+            total_loss += loss
+            n_iter += 1
 
-        if i == start:
-            ## load first SE3 pose xyzQuaternion
-            abs_traj = mydataset.getTrajectoryAbs(start)
-            abs_traj = np.expand_dims(abs_traj, axis=0)
-            abs_traj = np.expand_dims(abs_traj, axis=0)
-            abs_traj = Variable(torch.from_numpy(abs_traj).type(torch.FloatTensor).cuda()) 
-                    
-        output = model(data, data_imu, abs_traj)
-        
-        err += float(((target - output) ** 2).mean())
-        
-        output = output.data.cpu().numpy()
-
-        xyzq = se3qua.se3R6toxyzQ(output)
-                
-        abs_traj = abs_traj.data.cpu().numpy()[0]
-        numarr = output
-        
-        abs_traj = se3qua.accu(abs_traj, numarr)
-        abs_traj = np.expand_dims(abs_traj, axis=0)
-        abs_traj = np.expand_dims(abs_traj, axis=0)
-        abs_traj = Variable(torch.from_numpy(abs_traj).type(torch.FloatTensor).cuda()) 
-        
-        ans.append(xyzq)
-        print(xyzq)
-        print('{}/{}'.format(str(i+1), str(len(mydataset)-1)) )
-        
-        
-    print('err = {}'.format(err/(len(mydataset)-1)))  
-    trajectoryAbs = mydataset.getTrajectoryAbsAll()
-    print(trajectoryAbs[0])
-    x = trajectoryAbs[0].astype(str)
-    x = ",".join(x)
-    
-    with open('../dockerData/EuRoC_modify/V2_01_easy/vicon0/sampled_relative_ans.csv', 'w+') as f:
-        tmpStr = x
-        f.write(tmpStr + '\n')        
-        
-        for i in range(len(ans)-1):
-            tmpStr = ans[i].astype(str)
-            tmpStr = ",".join(tmpStr)
-            print(tmpStr)
-            print(type(tmpStr))
-            f.write(tmpStr + '\n')      
+    return total_loss.data.float()/n_iter
     
 def main():
-    train()
-          
-    #test()
+    batch = 1
+    model = Vinet()
+    #optimizer = optim.SGD(model.parameters(), lr=0.005, momentum=0.9)
+    optimizer = optim.Adam(model.parameters(), lr = 0.001)
+    #scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 40, 60, 80, 100, 120, 140, 160, 180], gamma=0.5)
+    mydataset = MITStataCenterDataset('./data/mit', '2012-04-03-07-56-24', ['rgb', 'imu'], transformCameraData, '2012-04-03-07-56-24_part4_floor2.gt.laser', False)
+    train_idx, val_idx = train_test_split(list(range(len(mydataset))), test_size=0.25 , shuffle=False)
 
-    
+    train_data = Subset(mydataset, train_idx)
+    val_data = Subset(mydataset, val_idx)
+    train_loader = DataLoader(train_data, batch_size=batch, shuffle=False, drop_last=True)
+    val_loader = DataLoader(val_data, batch_size=batch, shuffle=False, drop_last=True)
+    #mydataset = MyDataset('../dockerData/EuRoC_modify/', 'V1_01_easy')
+    #criterion  = nn.MSELoss()
+    criterion  = nn.L1Loss() #size_average=False)
+
+    for epoch in range(300):
+        train_loss = train(model, criterion, optimizer, epoch, train_loader)
+        val_loss = test(model, criterion, epoch, val_loader)
+
+        #scheduler.step()
+        print('Epoch {}\nTrain loss: {}\nEvaluation loss: {}\n'.format(epoch, train_loss, val_loss))
         
 
 if __name__ == '__main__':
